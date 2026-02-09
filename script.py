@@ -5,12 +5,14 @@ Uses Playwright to handle age verification and pagination.
 """
  
 import asyncio
+import importlib.util
 import json
-import re
 import random
+import re
+import subprocess
+import sys
 from pathlib import Path
-from playwright.async_api import async_playwright
-import aiohttp
+
  
 BASE_URL = "https://www.justice.gov/epstein/doj-disclosures/data-set-9-files"
 OUTPUT_DIR = Path(r"D:\Epstein Files\Dataset9")
@@ -30,6 +32,39 @@ EXTRA_HEADERS = {
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
 }
 DOWNLOAD_CHUNK_SIZE = 1_048_576  # 1MB chunks to avoid large memory use
+async_playwright = None
+aiohttp = None
+
+
+def _ensure_playwright():
+    global async_playwright
+    if async_playwright is not None:
+        return
+    if importlib.util.find_spec("playwright") is None:
+        print("Playwright not installed. Installing dependencies...")
+        subprocess.check_call([sys.executable, "-m", "pip", "install", "playwright"])
+    try:
+        subprocess.check_call([sys.executable, "-m", "playwright", "install", "chromium"])
+    except subprocess.CalledProcessError:
+        print(
+            "Unable to download Playwright Chromium. "
+            "Set PLAYWRIGHT_DOWNLOAD_HOST or install Chromium manually, "
+            "then rerun this script."
+        )
+        raise SystemExit(1)
+    from playwright.async_api import async_playwright as playwright_async
+    async_playwright = playwright_async
+
+
+def _ensure_aiohttp():
+    global aiohttp
+    if aiohttp is not None:
+        return
+    if importlib.util.find_spec("aiohttp") is None:
+        print("aiohttp not installed. Installing dependency...")
+        subprocess.check_call([sys.executable, "-m", "pip", "install", "aiohttp"])
+    import aiohttp as aiohttp_module
+    aiohttp = aiohttp_module
 
 
 def _load_json(path, default):
@@ -206,6 +241,7 @@ async def _scrape_pages_for_batch(batch_size, all_files, file_set, state):
     """Scrape pages until we collect batch_size new files or reach the end."""
     new_files = []
     existing_files = _existing_file_names()
+    _ensure_playwright()
 
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=HEADLESS, slow_mo=SLOW_MO_MS)
@@ -305,6 +341,8 @@ async def _download_batch(batch, all_files):
     """Download a batch of file records."""
     if not batch:
         return 0, 0, 0
+    _ensure_playwright()
+    _ensure_aiohttp()
 
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     existing_files = _existing_file_names()
