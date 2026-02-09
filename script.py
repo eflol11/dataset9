@@ -9,7 +9,6 @@ import importlib.util
 import json
 import random
 import re
-import subprocess
 import sys
 from pathlib import Path
 
@@ -41,15 +40,13 @@ def _ensure_playwright():
     if async_playwright is not None:
         return
     if importlib.util.find_spec("playwright") is None:
-        print("Playwright not installed. Installing dependencies...")
-        subprocess.check_call([sys.executable, "-m", "pip", "install", "playwright"])
-    try:
-        subprocess.check_call([sys.executable, "-m", "playwright", "install", "chromium"])
-    except subprocess.CalledProcessError:
         print(
-            "Unable to download Playwright Chromium. "
-            "Set PLAYWRIGHT_DOWNLOAD_HOST or install Chromium manually, "
-            "then rerun this script."
+            "Missing dependency: playwright.\n"
+            "Install it with:\n"
+            "  pip install playwright\n"
+            "  playwright install chromium\n"
+            "If Chromium downloads are blocked, set PLAYWRIGHT_DOWNLOAD_HOST or "
+            "install Chromium manually, then rerun this script."
         )
         raise SystemExit(1)
     from playwright.async_api import async_playwright as playwright_async
@@ -61,8 +58,12 @@ def _ensure_aiohttp():
     if aiohttp is not None:
         return
     if importlib.util.find_spec("aiohttp") is None:
-        print("aiohttp not installed. Installing dependency...")
-        subprocess.check_call([sys.executable, "-m", "pip", "install", "aiohttp"])
+        print(
+            "Missing dependency: aiohttp.\n"
+            "Install it with:\n"
+            "  pip install aiohttp"
+        )
+        raise SystemExit(1)
     import aiohttp as aiohttp_module
     aiohttp = aiohttp_module
 
