@@ -35,15 +35,22 @@ async_playwright = None
 aiohttp = None
 
 
-def _playwright_available():
+def _ensure_playwright():
     global async_playwright
     if async_playwright is not None:
-        return True
+        return
     if importlib.util.find_spec("playwright") is None:
-        return False
+        print(
+            "Missing dependency: playwright.\n"
+            "Install it with:\n"
+            "  pip install playwright\n"
+            "  playwright install chromium\n"
+            "If Chromium downloads are blocked, set PLAYWRIGHT_DOWNLOAD_HOST or "
+            "install Chromium manually, then rerun this script."
+        )
+        raise SystemExit(1)
     from playwright.async_api import async_playwright as playwright_async
     async_playwright = playwright_async
-    return True
 
 
 def _ensure_aiohttp():
@@ -235,14 +242,7 @@ async def _scrape_pages_for_batch(batch_size, all_files, file_set, state):
     """Scrape pages until we collect batch_size new files or reach the end."""
     new_files = []
     existing_files = _existing_file_names()
-    if not _playwright_available():
-        print(
-            "Playwright not available; falling back to HTTP-only scraping. "
-            "Install Playwright + Chromium for more reliable results."
-        )
-        return await _scrape_pages_for_batch_http(
-            batch_size, all_files, file_set, state, existing_files
-        )
+    _ensure_playwright()
 
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=HEADLESS, slow_mo=SLOW_MO_MS)
@@ -416,6 +416,7 @@ async def _download_batch(batch, all_files):
     """Download a batch of file records."""
     if not batch:
         return 0, 0, 0
+    _ensure_playwright()
     _ensure_aiohttp()
 
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
