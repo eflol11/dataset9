@@ -338,6 +338,80 @@ async def _scrape_pages_for_batch(batch_size, all_files, file_set, state):
     return new_files
  
  
+async def _scrape_pages_for_batch_http(batch_size, all_files, file_set, state, existing_files):
+    """HTTP-only scrape when Playwright is unavailable."""
+    new_files = []
+    _ensure_aiohttp()
+
+    timeout = aiohttp.ClientTimeout(total=PAGE_TIMEOUT_MS / 1000 + 30)
+    headers = {"User-Agent": USER_AGENT, **EXTRA_HEADERS}
+    cookie_jar = aiohttp.CookieJar()
+    cookie_jar.update_cookies(
+        _cookie_dict_from_list(_age_cookies()),
+        response_url="https://www.justice.gov/"
+    )
+
+    current_page = state.get("next_page", 0)
+    async with aiohttp.ClientSession(headers=headers, timeout=timeout, cookie_jar=cookie_jar) as session:
+        while batch_size is None or len(new_files) < batch_size:
+            print(f"Scraping page {current_page} (HTTP fallback)...")
+            url = f"{BASE_URL}?page={current_page}"
+            try:
+                async with session.get(url, allow_redirects=True) as resp:
+                    if resp.status != 200:
+                        print(f"  HTTP {resp.status} for page {current_page}. Stopping.")
+                        break
+                    html = await resp.text(errors="ignore")
+            except Exception as exc:
+                print(f"  Request failed for page {current_page}: {exc}")
+                break
+
+            if _is_access_denied(html):
+                _save_debug_html(html, current_page)
+                print("  Access denied detected. Stopping for resume.")
+                break
+
+            links = _extract_links_from_html(html)
+            if not links:
+                _save_debug_html(html, current_page)
+                print(f"No files found on page {current_page}, stopping.")
+                break
+
+            page_new_files = []
+            for href in links:
+                filename = href.split("/")[-1]
+                if filename not in file_set:
+                    file_set.add(filename)
+                    record = {
+                        "filename": filename,
+                        "url": f"https://www.justice.gov{href}" if href.startswith("/") else href,
+                        "downloaded": filename in existing_files
+                    }
+                    all_files.append(record)
+                    new_files.append(record)
+                    page_new_files.append(record)
+                    if batch_size is not None and len(new_files) >= batch_size:
+                        break
+
+            print(f"  Found {len(links)} links, total unique files: {len(all_files)}")
+
+            if page_new_files:
+                print(f"  Downloading {len(page_new_files)} new files from page {current_page}...")
+                downloaded, skipped, failed = await _download_batch(page_new_files, all_files)
+                _save_index(all_files)
+                if failed > 0:
+                    print("  Some downloads failed on this page; will resume later.")
+
+            current_page += 1
+            state["next_page"] = current_page
+            _save_state(state)
+            _save_index(all_files)
+
+            await asyncio.sleep(0.5)
+
+    return new_files
+
+
 async def _download_batch(batch, all_files):
     """Download a batch of file records."""
     if not batch:
@@ -352,21 +426,27 @@ async def _download_batch(batch, all_files):
     timeout = aiohttp.ClientTimeout(total=DOWNLOAD_TIMEOUT_MS / 1000 + 60)
     headers = {"User-Agent": USER_AGENT, **EXTRA_HEADERS}
 
-    async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=HEADLESS, slow_mo=SLOW_MO_MS)
-        context = await browser.new_context(
-            user_agent=USER_AGENT,
-            locale="en-US",
-            timezone_id="America/New_York",
-            extra_http_headers=EXTRA_HEADERS
-        )
-        await _add_age_cookies(context)
-        page = await context.new_page()
-        await _ensure_age_verified(page)
-        context_cookies = await context.cookies()
-
     cookie_jar = aiohttp.CookieJar()
-    cookie_jar.update_cookies(_cookie_dict_from_list(context_cookies))
+    if _playwright_available():
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(headless=HEADLESS, slow_mo=SLOW_MO_MS)
+            context = await browser.new_context(
+                user_agent=USER_AGENT,
+                locale="en-US",
+                timezone_id="America/New_York",
+                extra_http_headers=EXTRA_HEADERS
+            )
+            await _add_age_cookies(context)
+            page = await context.new_page()
+            await _ensure_age_verified(page)
+            context_cookies = await context.cookies()
+            await browser.close()
+        cookie_jar.update_cookies(_cookie_dict_from_list(context_cookies))
+    else:
+        cookie_jar.update_cookies(
+            _cookie_dict_from_list(_age_cookies()),
+            response_url="https://www.justice.gov/"
+        )
     async with aiohttp.ClientSession(headers=headers, timeout=timeout, cookie_jar=cookie_jar) as session:
 
         downloaded = 0
